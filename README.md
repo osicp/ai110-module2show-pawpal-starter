@@ -45,14 +45,23 @@ pip install -r requirements.txt
 ## 🖥️ Sample Output
 
 Paste a sample of your app's CLI or Streamlit output here so a reader can see what a generated plan looks like:
+┌────────────────────────────────────────────────────────────────────────┐
+│                    🐾 TODAY'S PET CARE PLAN: JORDAN                    │
+└────────────────────────────────────────────────────────────────────────┘
+  Time Limit: 60 mins | Scheduled: 55 mins (91.7% Used)
+  Progress:   [██████████████████████████████████████████░░░░]
+┌──────────────┬──────────────────────────────┬────────────┬─────────────┐
+│ TIME SLOT    │ TASK DESCRIPTION             │ DURATION   │ PRIORITY    │
+├──────────────┼──────────────────────────────┼────────────┼─────────────┤
+│ 08:00 - 08:30│ 🦮 Biscuit Morning Walk      │ 30 min     │ HIGH        │
+│ 08:30 - 08:45│ 🥣 Mochi Morning Feed        │ 15 min     │ HIGH        │
+│ 13:00 - 13:10│ ✂️  Biscuit Grooming Session  │ 10 min     │ MEDIUM      │
+└──────────────┴──────────────────────────────┴────────────┴─────────────┘
+⚠️ SKIPPED TASKS (Exceeded Time Budget):
+  • 🧸 Mochi Laser Playtime (15 min) [LOW]
+    └─ Reason: Exceeded remaining care time limit by 10 mins.
 
-```
-# e.g.:
-# Daily plan for Biscuit (Golden Retriever):
-#   08:00 — Morning walk (30 min) [priority: high]
-#   09:00 — Feeding (10 min) [priority: high]
-#   ...
-```
+
 
 ## 🧪 Testing PawPal+
 
