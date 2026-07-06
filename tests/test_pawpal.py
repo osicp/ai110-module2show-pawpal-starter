@@ -221,3 +221,95 @@ def test_recurring_task_auto_spawning():
     new_none = scheduler.mark_task_complete(t_none)
     assert t_none.is_completed
     assert new_none is None
+
+def test_sorting_correctness_suite():
+    # Test sorting correctness on various list conditions, including empty lists, mixed types, and tie-breakers.
+    owner = Owner(name="Jordan", available_time_minutes=120)
+    pet = Pet(name="Mochi", species="Cat", breed="Ragdoll", age=2, owner=owner)
+    
+    # 1. Edge Case: Empty list sorting should return an empty list and not fail
+    scheduler = Scheduler(pet=pet, tasks=[])
+    assert scheduler.sort_tasks_by_time() == []
+
+    # 2. Edge Case: Sorting mixed fixed and flexible tasks with priority tie-breakers
+    t_flexible_low = Task(title="Flex Low", duration_minutes=10, priority=Priority.LOW, category="walk", time_of_day=TimeOfDay.AFTERNOON)
+    t_fixed_late = Task(title="Fixed Late", duration_minutes=15, priority=Priority.HIGH, category="walk", specific_time="14:00")
+    t_fixed_early = Task(title="Fixed Early", duration_minutes=20, priority=Priority.MEDIUM, category="walk", specific_time="08:30")
+    t_flexible_high = Task(title="Flex High", duration_minutes=15, priority=Priority.HIGH, category="walk", time_of_day=TimeOfDay.MORNING)
+    
+    scheduler.tasks = [t_flexible_low, t_fixed_late, t_fixed_early, t_flexible_high]
+    sorted_tasks = scheduler.sort_tasks_by_time()
+    
+    # Fixed-time tasks should appear first chronologically: Fixed Early (08:30) -> Fixed Late (14:00)
+    # Next, flexible tasks: Flex High (Morning, High Priority) -> Flex Low (Afternoon, Low Priority)
+    assert sorted_tasks[0] == t_fixed_early
+    assert sorted_tasks[1] == t_fixed_late
+    assert sorted_tasks[2] == t_flexible_high
+    assert sorted_tasks[3] == t_flexible_low
+
+    # 3. Edge Case: Tie-breaker on the same start time but different priorities
+    t_fixed_high_priority = Task(title="High Priority", duration_minutes=10, priority=Priority.HIGH, category="meds", specific_time="10:00")
+    t_fixed_medium_priority = Task(title="Medium Priority", duration_minutes=10, priority=Priority.MEDIUM, category="feeding", specific_time="10:00")
+    
+    scheduler.tasks = [t_fixed_medium_priority, t_fixed_high_priority]
+    sorted_tasks = scheduler.sort_tasks_by_time()
+    assert sorted_tasks[0] == t_fixed_high_priority
+    assert sorted_tasks[1] == t_fixed_medium_priority
+
+def test_recurrence_logic_suite():
+    # Test recurrence logic, verifying that transitioning to complete spawns a new task, while completing a completed task does not trigger duplication.
+    owner = Owner(name="Jordan", available_time_minutes=60)
+    pet = Pet(name="Mochi", species="Cat", breed="Ragdoll", age=2, owner=owner)
+    
+    # 1. Edge Case: Toggling completion status on a completed recurring task should not spawn another task instance
+    t_daily = Task(title="Daily Feeding", duration_minutes=10, priority=Priority.HIGH, category="feeding", recurrence="daily")
+    scheduler = Scheduler(pet=pet, tasks=[t_daily])
+    
+    # Complete the task first time -> should spawn next occurrence
+    new_occurrence = scheduler.mark_task_complete(t_daily)
+    assert new_occurrence is not None
+    assert len(scheduler.tasks) == 2
+    
+    # Complete it again while it's already complete -> should NOT spawn any additional task
+    duplicate_check = scheduler.mark_task_complete(t_daily)
+    assert duplicate_check is None
+    assert len(scheduler.tasks) == 2
+    
+    # 2. Date arithmetic edge cases: Verify base date rollover
+    import datetime
+    custom_date = datetime.date(2026, 12, 31) # End of year rollover test
+    t_rollover = Task(title="Year End Feed", duration_minutes=10, priority=Priority.HIGH, category="feeding", recurrence="daily", due_date=custom_date)
+    scheduler.tasks = [t_rollover]
+    
+    next_occurrence = scheduler.mark_task_complete(t_rollover)
+    assert next_occurrence is not None
+    # End of year roll-over check: 2026-12-31 + 1 day = 2027-01-01
+    assert next_occurrence.due_date == datetime.date(2027, 1, 1)
+
+def test_conflict_detection_suite():
+    # Test conflict detection, covering full overlaps, touch-point overlaps (boundaries), and clean schedules.
+    owner = Owner(name="Jordan", available_time_minutes=60)
+    pet = Pet(name="Mochi", species="Cat", breed="Ragdoll", age=2, owner=owner)
+    scheduler = Scheduler(pet=pet, tasks=[])
+    
+    # 1. Edge Case: Touch-point boundaries (Task A ends at 08:30, Task B starts at 08:30). Should NOT conflict.
+    t_a = Task(title="Walk A", duration_minutes=30, priority=Priority.HIGH, category="walk", specific_time="08:00") # 08:00 - 08:30
+    t_b = Task(title="Feed B", duration_minutes=15, priority=Priority.MEDIUM, category="feeding", specific_time="08:30") # 08:30 - 08:45
+    scheduler.tasks = [t_a, t_b]
+    assert len(scheduler.detect_conflicts()) == 0
+    
+    # 2. Edge Case: Partial overlap (Task B starts 1 minute before Task A ends)
+    t_c = Task(title="Play C", duration_minutes=20, priority=Priority.LOW, category="enrichment", specific_time="08:29") # 08:29 - 08:49 (overlaps A)
+    scheduler.tasks = [t_a, t_c]
+    conflicts = scheduler.detect_conflicts()
+    assert len(conflicts) == 1
+    assert conflicts[0]["task1"] == t_a
+    assert conflicts[0]["task2"] == t_c
+    
+    # 3. Edge Case: Nested overlap (Task D is fully inside Task A)
+    t_d = Task(title="Meds D", duration_minutes=10, priority=Priority.HIGH, category="meds", specific_time="08:10") # 08:10 - 08:20
+    scheduler.tasks = [t_a, t_d]
+    conflicts_nested = scheduler.detect_conflicts()
+    assert len(conflicts_nested) == 1
+    assert conflicts_nested[0]["task1"] == t_a
+    assert conflicts_nested[0]["task2"] == t_d

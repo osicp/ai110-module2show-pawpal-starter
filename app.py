@@ -317,27 +317,51 @@ with col_left:
     elif selected_pet_filter != "All Pets":
         pet_filter_key = selected_pet_filter
         
-    # Filter and display tasks interactively
-    filtered_indices_and_tasks = []
-    for i, t in enumerate(st.session_state.scheduler.tasks):
-        # Pet filter
-        if selected_pet_filter != "All Pets":
-            if t.pet_name.lower() != pet_filter_key.lower():
-                continue
-        # Status filter
-        if selected_status_filter == "Pending" and t.is_completed:
-            continue
-        if selected_status_filter == "Completed" and not t.is_completed:
-            continue
-        filtered_indices_and_tasks.append((i, t))
+    # Filter and display tasks interactively using Scheduler methods
+    gen_status = "All" if selected_status_filter == "All Tasks" else selected_status_filter
+    
+    filtered_tasks = st.session_state.scheduler.filter_tasks(
+        pet_filter=pet_filter_key, 
+        status_filter=gen_status
+    )
+    
+    # Sort tasks using Scheduler method
+    sorted_tasks = st.session_state.scheduler.sort_tasks_by_time(filtered_tasks)
+    
+    # Post-filter for "All (Shared)" if selected in the UI
+    if selected_pet_filter == "All (Shared)":
+        sorted_tasks = [t for t in sorted_tasks if t.pet_name.lower() == "all"]
         
-    if filtered_indices_and_tasks:
-        for idx, t in filtered_indices_and_tasks:
+    if sorted_tasks:
+        # Collapsible Expander containing professional summary table
+        with st.expander("📊 View Task Summary Table"):
+            summary_df = []
+            for i, t in enumerate(sorted_tasks):
+                summary_df.append({
+                    "Index": i + 1,
+                    "Title": t.title,
+                    "Pet": t.pet_name,
+                    "Duration (min)": t.duration_minutes,
+                    "Priority": t.priority.name,
+                    "Time Preference": f"{t.specific_time}" if t.specific_time else f"{t.time_of_day.value.capitalize()}",
+                    "Recurrence": t.recurrence.capitalize(),
+                    "Status": "Completed" if t.is_completed else "Pending"
+                })
+            st.table(summary_df)
+
+        st.markdown("##### *Interactive Checklist:*")
+        for t in sorted_tasks:
+            # Find original index of this task in st.session_state.scheduler.tasks to maintain state
+            try:
+                original_idx = st.session_state.scheduler.tasks.index(t)
+            except ValueError:
+                continue
+
             # Custom container for interactive tasks
-            t_col_check, t_col_desc = st.columns([0.1, 0.9])
+            t_col_check, t_col_desc = st.columns([0.08, 0.92])
             with t_col_check:
                 # Track check box state and update status when toggled
-                is_checked = st.checkbox("", value=t.is_completed, key=f"check_pool_{idx}")
+                is_checked = st.checkbox("", value=t.is_completed, key=f"check_pool_{original_idx}")
                 if is_checked != t.is_completed:
                     if is_checked:
                         st.session_state.scheduler.mark_task_complete(t)
@@ -348,14 +372,12 @@ with col_left:
                 time_str = f"⏰ {t.specific_time}" if t.specific_time else f"📅 {t.time_of_day.value.capitalize()}"
                 rec_badge = f" | 🔄 {t.recurrence.capitalize()}" if t.recurrence != "none" else ""
                 pet_badge = f" | 🐾 {t.pet_name}" if t.pet_name != "All" else " | 🐾 All Pets"
-                completed_style = "text-decoration: line-through; color: #A0AEC0;" if t.is_completed else ""
                 
-                st.markdown(
-                    f"<div style='{completed_style}'>"
-                    f"**{t.title}** ({t.duration_minutes}m) — `{t.priority.name}` — {time_str}{pet_badge}{rec_badge}"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
+                # Render using st.success for completed tasks and st.info for pending tasks
+                if t.is_completed:
+                    st.success(f"**{t.title}** ({t.duration_minutes}m) — `{t.priority.name}` — {time_str}{pet_badge}{rec_badge} (Completed)")
+                else:
+                    st.info(f"**{t.title}** ({t.duration_minutes}m) — `{t.priority.name}` — {time_str}{pet_badge}{rec_badge}")
     else:
         st.info("No tasks in the pool matching current filters.")
 
