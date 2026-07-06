@@ -1,11 +1,18 @@
 classDiagram
+    class Owner {
+        +str name
+        +int available_time_minutes
+        +dict preferences
+        +get_owner_details() str
+    }
+
     class Pet {
         +str name
         +str species
         +str breed
         +int age
-        +str owner_name
-        +get_profile_summary() str
+        +Owner owner
+        +get_profile() str
     }
 
     class Task {
@@ -17,25 +24,19 @@ classDiagram
         +update_status(completed: bool) void
     }
 
-    class Constraints {
-        +int max_daily_minutes
-        +int preferred_start_hour
-        +int preferred_end_hour
-        +is_valid_task(task: Task) bool
-    }
-
-    class Schedule {
+    class Scheduler {
         +Pet pet
+        +Owner owner
         +list tasks
-        +Constraints constraints
-        +list generated_plan
+        +list plan
         +str reasoning
-        +generate_daily_schedule() list
-        +get_total_duration() int
+        +generate_plan() list
         +get_reasoning() str
     }
 
-    Schedule --> Pet : schedules for
-    Schedule "1" *-- "*" Task : contains
-    Schedule --> Constraints : respects
+    Pet "1" --> "1" Owner : belongs to
+    Scheduler "1" --> "1" Pet : schedules for
+    Scheduler "1" --> "1" Owner : checks constraints of
+    Scheduler "1" *-- "*" Task : organizes
+
 

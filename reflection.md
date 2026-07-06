@@ -9,22 +9,13 @@ The three core actions a user should be able to perform are:
 3. Have the system generate a schedule that meets the constraints and priorities    
 
 - Briefly describe your initial UML design.
-1. Core Entities
-Pet: A simple data class holding the pet's profile information (name, species, age).
-
-Task: Represents a single care activity (id, name, duration, priority). It implements Python's __lt__ (less than) magic method so tasks can automatically be sorted by priority and duration.
-
-Constraints: Manages the user's daily reality. It holds the total available time and provides methods to check and deduct minutes as tasks are scheduled.
-
-2. The Orchestrator
-Schedule: The central hub and "smart container." It stores the Pet it belongs to and maintains the lists of tasks (the initial pool, what was scheduled, what was deferred, and the reasoning log). Its generate() method acts as the core engine, evaluating the task pool against the constraints.
-
-3. Class Relationships
-Association: Schedule is associated with one Pet.
-
-Aggregation: Schedule aggregates Task objects, taking ownership of organizing them from a general pool into specific outcome lists (scheduled vs. deferred).
-
-Dependency: Schedule depends on Constraints. The generate() method requires a Constraints object to be passed in so it can execute the time-checking logic.
+Domain Models (Owner, Pet, Task):
+Owner: Encapsulates the user profile, storing constraints (such as available_time_minutes) and customized preferences.
+Pet: Represents the animal receiving care and has a one-to-one relationship with its Owner.
+Task: Represents specific care items (e.g., feeding, walk) with a specified duration_minutes and priority level.
+Controller (Scheduler):
+Acts as the core engine. It associates a Pet, an Owner, and a list of Task objects.
+It filters and prioritizes the list of tasks against the owner's constraints (available_time_minutes) to construct the final daily plan and explain the selection reasoning.
 
 - What classes did you include, and what responsibilities did you assign to each?
 1 Task class, stores task id, name, duration, and priority
