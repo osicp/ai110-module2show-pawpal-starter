@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 from enum import Enum
+from datetime import date, timedelta
 
 class Priority(Enum):
     LOW = 1
@@ -63,10 +64,70 @@ class Task:
     category: str
     time_of_day: TimeOfDay = TimeOfDay.ANY
     is_completed: bool = False
+    specific_time: Optional[str] = None  # Format "HH:MM", e.g., "08:30"
+    pet_name: str = "All"
+    recurrence: str = "none"             # "none", "daily", "weekly"
+    due_date: Optional[date] = None
 
-    def update_status(self, completed: bool) -> None:
-        """Updates the completion status of the task."""
+    def update_status(self, completed: bool) -> Optional['Task']:
+        """
+        Updates the completion status of the task. If a recurring task ("daily" or "weekly")
+        is transitioned from incomplete to complete, this method automatically instantiates
+        and returns a new pending Task instance representing the next scheduled occurrence.
+
+        Args:
+            completed (bool): The new completion status to set.
+
+        Returns:
+            Optional[Task]: A new Task instance for the next occurrence if the task is recurring
+                            and has just been marked complete. Returns None otherwise.
+        """
+        was_completed = self.is_completed
         self.is_completed = completed
+        
+        if completed and not was_completed and self.recurrence in ("daily", "weekly"):
+            base_date = self.due_date if self.due_date else date.today()
+            if self.recurrence == "daily":
+                next_date = base_date + timedelta(days=1)
+            else:  # weekly
+                next_date = base_date + timedelta(weeks=1)
+                
+            return Task(
+                title=self.title,
+                duration_minutes=self.duration_minutes,
+                priority=self.priority,
+                category=self.category,
+                time_of_day=self.time_of_day,
+                is_completed=False,
+                specific_time=self.specific_time,
+                pet_name=self.pet_name,
+                recurrence=self.recurrence,
+                due_date=next_date
+            )
+        return None
+
+    def get_start_minutes(self) -> Optional[int]:
+        """Converts specific_time 'HH:MM' to minutes from midnight."""
+        if not self.specific_time or not self.specific_time.strip():
+            return None
+        try:
+            parts = self.specific_time.strip().split(":")
+            if len(parts) != 2:
+                return None
+            hrs = int(parts[0])
+            mins = int(parts[1])
+            if 0 <= hrs < 24 and 0 <= mins < 60:
+                return hrs * 60 + mins
+        except Exception:
+            pass
+        return None
+
+    def get_end_minutes(self) -> Optional[int]:
+        """Returns end time in minutes from midnight if specific_time is set."""
+        start = self.get_start_minutes()
+        if start is None:
+            return None
+        return start + self.duration_minutes
 
 class Scheduler:
     def __init__(self, pet: Pet, tasks: List[Task]):
@@ -80,22 +141,107 @@ class Scheduler:
         """Adds a task to the scheduler's list of tasks."""
         self.tasks.append(task)
 
+    def mark_task_complete(self, task: Task) -> Optional[Task]:
+        """
+        Marks a task complete within the scheduler. If the task is configured as a daily
+        or weekly recurring task, it automatically spawns the next pending occurrence
+        and registers it into the scheduler's internal task pool.
+
+        Args:
+            task (Task): The task to mark complete.
+
+        Returns:
+            Optional[Task]: The newly created Task instance for the next occurrence if recurring,
+                            or None if the task is non-recurring.
+        """
+        new_task = task.update_status(True)
+        if new_task:
+            self.add_task(new_task)
+        return new_task
 
     def _format_time(self, minutes: int) -> str:
         hrs = (minutes // 60) % 24
         mins = minutes % 60
         return f"{hrs:02d}:{mins:02d}"
 
-    def generate_plan(self) -> List[Dict[str, Any]]:
-        """Generates a daily schedule based on priority and owner's time constraints."""
-        self.plan = []
-        reason_steps = []
+    def detect_conflicts(self, tasks: Optional[List[Task]] = None) -> List[Dict[str, Any]]:
+        """
+        Scans a list of tasks for time slot conflicts. A conflict is defined as two tasks having
+        overlapping specific time windows (e.g., trying to do two tasks at once).
 
-        total_time_limit = self.owner.available_time_minutes
-        current_used_time = 0
+        Args:
+            tasks (Optional[List[Task]]): The list of tasks to scan. Defaults to the scheduler's internal list.
 
-        # Sort tasks: Priority descending (HIGH -> MEDIUM -> LOW). 
-        # Secondary sort: time of day ordering (morning -> afternoon -> evening -> any)
+        Returns:
+            List[Dict[str, Any]]: A list of conflict descriptions, each specifying the conflicting
+                                  tasks and a descriptive message.
+        """
+        target_tasks = tasks if tasks is not None else self.tasks
+        fixed_tasks = [t for t in target_tasks if t.get_start_minutes() is not None]
+        
+        # Sort them by start time
+        fixed_tasks = sorted(fixed_tasks, key=lambda t: t.get_start_minutes())
+        
+        conflicts = []
+        for i in range(len(fixed_tasks)):
+            t1 = fixed_tasks[i]
+            s1 = t1.get_start_minutes()
+            e1 = t1.get_end_minutes()
+            for j in range(i + 1, len(fixed_tasks)):
+                t2 = fixed_tasks[j]
+                s2 = t2.get_start_minutes()
+                e2 = t2.get_end_minutes()
+                
+                # Overlap check
+                if s1 < e2 and s2 < e1:
+                    conflicts.append({
+                        "task1": t1,
+                        "task2": t2,
+                        "message": f"Conflict: '{t1.title}' ({t1.specific_time}) overlaps with '{t2.title}' ({t2.specific_time})"
+                    })
+        return conflicts
+
+    def filter_tasks(self, pet_filter: str = "All", status_filter: str = "All", tasks: Optional[List[Task]] = None) -> List[Task]:
+        """
+        Filters a list of tasks by pet ownership (matching the pet name or shared 'All' tasks)
+        and completion status.
+
+        Args:
+            pet_filter (str): Pet name filter (e.g. "Mochi"). If "All", no pet filter is applied.
+            status_filter (str): Completion status filter ("All", "Pending", or "Completed").
+            tasks (Optional[List[Task]]): The list of tasks to filter. Defaults to the scheduler's internal list.
+
+        Returns:
+            List[Task]: A filtered copy of the list of tasks.
+        """
+        target_tasks = tasks if tasks is not None else self.tasks
+        filtered = []
+        for t in target_tasks:
+            # Pet name filter
+            if pet_filter != "All" and t.pet_name != "All" and t.pet_name.lower() != pet_filter.lower():
+                continue
+            # Status filter
+            if status_filter == "Pending" and t.is_completed:
+                continue
+            elif status_filter == "Completed" and not t.is_completed:
+                continue
+            filtered.append(t)
+        return filtered
+
+    def sort_tasks_by_time(self, tasks: Optional[List[Task]] = None) -> List[Task]:
+        """
+        Sorts tasks chronologically by start time. Fixed-time tasks (those with specific start times)
+        are placed first, followed by flexible tasks organized by their preferred TimeOfDay window
+        (Morning -> Afternoon -> Evening -> Any) and then by priority descending.
+
+        Args:
+            tasks (Optional[List[Task]]): The list of tasks to sort. Defaults to the scheduler's internal list.
+
+        Returns:
+            List[Task]: A sorted copy of the tasks list.
+        """
+        target_tasks = tasks if tasks is not None else self.tasks
+        
         def get_time_of_day_order(t: Task) -> int:
             order = {
                 TimeOfDay.MORNING: 0,
@@ -105,24 +251,125 @@ class Scheduler:
             }
             return order.get(t.time_of_day, 4)
 
-        sorted_tasks = sorted(
-            self.tasks,
+        # Sort key:
+        # 1. Has specific time (0) vs. does not (1)
+        # 2. Start time in minutes (if it exists)
+        # 3. TimeOfDay order (morning -> afternoon -> evening -> any)
+        # 4. Priority descending (HIGH -> MEDIUM -> LOW)
+        def sort_key(t: Task):
+            start_min = t.get_start_minutes()
+            if start_min is not None:
+                return (0, start_min, 0, -t.priority.value)
+            else:
+                return (1, 0, get_time_of_day_order(t), -t.priority.value)
+
+        return sorted(target_tasks, key=sort_key)
+
+    def generate_plan(self, pet_filter: str = "All", status_filter: str = "All") -> List[Dict[str, Any]]:
+        """Generates a daily schedule based on priority, specific times, and owner's time constraints."""
+        self.plan = []
+        reason_steps = []
+
+        total_time_limit = self.owner.available_time_minutes
+        current_used_time = 0
+
+        # Apply filtering
+        filtered_tasks = self.filter_tasks(pet_filter=pet_filter, status_filter=status_filter)
+
+        # Separate fixed-time tasks and flexible tasks
+        fixed_tasks = [t for t in filtered_tasks if t.get_start_minutes() is not None]
+        flexible_tasks = [t for t in filtered_tasks if t.get_start_minutes() is None]
+
+        # Sort fixed-time tasks chronologically
+        fixed_tasks.sort(key=lambda t: t.get_start_minutes())
+
+        # Sort flexible tasks: Priority descending (HIGH -> MEDIUM -> LOW), then time of day ordering
+        def get_time_of_day_order(t: Task) -> int:
+            order = {
+                TimeOfDay.MORNING: 0,
+                TimeOfDay.AFTERNOON: 1,
+                TimeOfDay.EVENING: 2,
+                TimeOfDay.ANY: 3
+            }
+            return order.get(t.time_of_day, 4)
+
+        flexible_tasks.sort(
             key=lambda t: (t.priority.value, -get_time_of_day_order(t)),
             reverse=True
         )
 
-        # Time markers for scheduling slots (in minutes from midnight)
-        morning_marker = 8 * 60      # 08:00
-        afternoon_marker = 13 * 60   # 13:00
-        evening_marker = 18 * 60     # 18:00
-
-        reason_steps.append(f"Starting schedule generation for {self.pet.name}.")
+        reason_steps.append(f"Starting schedule generation for {self.pet.name} (Filter: Pet={pet_filter}, Status={status_filter}).")
         reason_steps.append(f"Owner {self.owner.name} has {total_time_limit} minutes available.")
-        reason_steps.append(f"Analyzing {len(self.tasks)} total tasks, sorted by priority and preferred time of day.")
+        reason_steps.append(f"Analyzing {len(filtered_tasks)} filtered tasks ({len(fixed_tasks)} fixed-time, {len(flexible_tasks)} flexible).")
 
-        for task in sorted_tasks:
-            # Check if task duration fits within remaining time
+        # Keep track of scheduled intervals: (start_minutes, end_minutes, task)
+        scheduled_intervals = []
+
+        # 1. Schedule fixed-time tasks first
+        for task in fixed_tasks:
+            start_min = task.get_start_minutes()
+            end_min = task.get_end_minutes()
             remaining_time = total_time_limit - current_used_time
+
+            if task.duration_minutes > remaining_time:
+                reason_steps.append(
+                    f"❌ Skipped '{task.title}' (Priority: {task.priority.name}, Duration: {task.duration_minutes} min, Time: {task.specific_time}) "
+                    f"because it exceeds the remaining available care time of {remaining_time} minutes."
+                )
+                continue
+
+            # Check overlap with already scheduled intervals
+            overlap = False
+            for s, e, other_task in scheduled_intervals:
+                if start_min < e and s < end_min:
+                    overlap = True
+                    reason_steps.append(
+                        f"❌ Conflict: Skipped '{task.title}' ({task.specific_time}) because it overlaps with "
+                        f"'{other_task.title}' ({self._format_time(s)} - {self._format_time(e)})."
+                    )
+                    break
+
+            if not overlap:
+                scheduled_intervals.append((start_min, end_min, task))
+                current_used_time += task.duration_minutes
+                self.plan.append({
+                    "title": task.title,
+                    "category": task.category,
+                    "duration_minutes": task.duration_minutes,
+                    "priority": task.priority.name,
+                    "time_of_day": task.time_of_day.value,
+                    "start_time": self._format_time(start_min),
+                    "end_time": self._format_time(end_min),
+                    "start_minutes": start_min,
+                    "pet_name": task.pet_name,
+                    "recurrence": task.recurrence,
+                    "is_completed": task.is_completed
+                })
+                reason_steps.append(
+                    f"✅ Scheduled Fixed-Time '{task.title}' (Priority: {task.priority.name}, Duration: {task.duration_minutes} min) "
+                    f"at {self._format_time(start_min)} - {self._format_time(end_min)}."
+                )
+
+        # Helper to find first available gap in a window
+        def find_gap(window_start: int, window_end: int, duration: int, scheduled: List[tuple]) -> Optional[int]:
+            sorted_sched = sorted(scheduled, key=lambda x: x[0])
+            curr = window_start
+            for s, e, _ in sorted_sched:
+                if s > curr:
+                    gap_end = min(s, window_end)
+                    if gap_end - curr >= duration:
+                        return curr
+                curr = max(curr, e)
+                if curr >= window_end:
+                    break
+            if curr + duration <= window_end:
+                return curr
+            return None
+
+        # 2. Schedule flexible tasks in available gaps
+        for task in flexible_tasks:
+            remaining_time = total_time_limit - current_used_time
+
             if task.duration_minutes > remaining_time:
                 reason_steps.append(
                     f"❌ Skipped '{task.title}' (Priority: {task.priority.name}, Duration: {task.duration_minutes} min) "
@@ -130,48 +377,54 @@ class Scheduler:
                 )
                 continue
 
-            # Determine start time slot
-            start_minutes = 0
+            # Determine preferred window
             if task.time_of_day == TimeOfDay.MORNING:
-                start_minutes = morning_marker
-                morning_marker += task.duration_minutes
+                w_start, w_end = 8 * 60, 12 * 60
             elif task.time_of_day == TimeOfDay.AFTERNOON:
-                start_minutes = afternoon_marker
-                afternoon_marker += task.duration_minutes
+                w_start, w_end = 13 * 60, 17 * 60
             elif task.time_of_day == TimeOfDay.EVENING:
-                start_minutes = evening_marker
-                evening_marker += task.duration_minutes
-            else:  # TimeOfDay.ANY
-                # Put it in the slot with the earliest running marker
-                min_marker = min(morning_marker, afternoon_marker, evening_marker)
-                if min_marker == morning_marker:
-                    start_minutes = morning_marker
-                    morning_marker += task.duration_minutes
-                elif min_marker == afternoon_marker:
-                    start_minutes = afternoon_marker
-                    afternoon_marker += task.duration_minutes
-                else:
-                    start_minutes = evening_marker
-                    evening_marker += task.duration_minutes
+                w_start, w_end = 18 * 60, 22 * 60
+            else:  # ANY
+                w_start, w_end = 8 * 60, 22 * 60
 
-            end_minutes = start_minutes + task.duration_minutes
-            current_used_time += task.duration_minutes
+            gap_start = find_gap(w_start, w_end, task.duration_minutes, scheduled_intervals)
 
-            self.plan.append({
-                "title": task.title,
-                "category": task.category,
-                "duration_minutes": task.duration_minutes,
-                "priority": task.priority.name,
-                "time_of_day": task.time_of_day.value,
-                "start_time": self._format_time(start_minutes),
-                "end_time": self._format_time(end_minutes),
-                "start_minutes": start_minutes
-            })
+            # If not found and preferred window wasn't ANY, try ANY window as fallback
+            if gap_start is None and task.time_of_day != TimeOfDay.ANY:
+                gap_start = find_gap(8 * 60, 22 * 60, task.duration_minutes, scheduled_intervals)
+                if gap_start is not None:
+                    reason_steps.append(
+                        f"ℹ️ Note: '{task.title}' could not fit in preferred {task.time_of_day.value} window; scheduled in fallback slot."
+                    )
 
-            reason_steps.append(
-                f"✅ Scheduled '{task.title}' (Priority: {task.priority.name}, Duration: {task.duration_minutes} min) "
-                f"at {self._format_time(start_minutes)} - {self._format_time(end_minutes)}."
-            )
+            if gap_start is not None:
+                start_min = gap_start
+                end_min = start_min + task.duration_minutes
+                scheduled_intervals.append((start_min, end_min, task))
+                current_used_time += task.duration_minutes
+
+                self.plan.append({
+                    "title": task.title,
+                    "category": task.category,
+                    "duration_minutes": task.duration_minutes,
+                    "priority": task.priority.name,
+                    "time_of_day": task.time_of_day.value,
+                    "start_time": self._format_time(start_min),
+                    "end_time": self._format_time(end_min),
+                    "start_minutes": start_min,
+                    "pet_name": task.pet_name,
+                    "recurrence": task.recurrence,
+                    "is_completed": task.is_completed
+                })
+                reason_steps.append(
+                    f"✅ Scheduled '{task.title}' (Priority: {task.priority.name}, Duration: {task.duration_minutes} min) "
+                    f"at {self._format_time(start_min)} - {self._format_time(end_min)}."
+                )
+            else:
+                reason_steps.append(
+                    f"❌ Skipped '{task.title}' (Priority: {task.priority.name}, Duration: {task.duration_minutes} min) "
+                    f"because no available time gap was found during its preferred window."
+                )
 
         # Sort the final plan chronologically for display
         self.plan.sort(key=lambda item: item["start_minutes"])

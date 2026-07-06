@@ -87,3 +87,137 @@ def test_scheduler_greedy_time_constraint():
     assert "Skipped 'Grooming'" in reasoning
     assert "Skipped 'Play'" in reasoning
     assert "45 / 60 available minutes" in reasoning
+
+def test_task_time_parsing():
+    # Valid times
+    t1 = Task(title="Test 1", duration_minutes=30, priority=Priority.HIGH, category="walk", specific_time="08:30")
+    assert t1.get_start_minutes() == 510
+    assert t1.get_end_minutes() == 540
+
+    t2 = Task(title="Test 2", duration_minutes=15, priority=Priority.HIGH, category="walk", specific_time="23:59")
+    assert t2.get_start_minutes() == 1439
+    assert t2.get_end_minutes() == 1454
+
+    # Invalid times
+    t3 = Task(title="Test 3", duration_minutes=10, priority=Priority.MEDIUM, category="walk", specific_time="invalid")
+    assert t3.get_start_minutes() is None
+    assert t3.get_end_minutes() is None
+
+    t4 = Task(title="Test 4", duration_minutes=10, priority=Priority.MEDIUM, category="walk", specific_time=None)
+    assert t4.get_start_minutes() is None
+
+    t5 = Task(title="Test 5", duration_minutes=10, priority=Priority.MEDIUM, category="walk", specific_time="25:00")
+    assert t5.get_start_minutes() is None
+
+def test_conflict_detection():
+    owner = Owner(name="Jordan", available_time_minutes=60)
+    pet = Pet(name="Mochi", species="Cat", breed="Ragdoll", age=2, owner=owner)
+    
+    # Overlapping tasks
+    t1 = Task(title="Walk A", duration_minutes=30, priority=Priority.HIGH, category="walk", specific_time="08:00")
+    t2 = Task(title="Feed B", duration_minutes=15, priority=Priority.HIGH, category="feeding", specific_time="08:15") # overlap [480, 510] and [495, 510]
+    t3 = Task(title="Play C", duration_minutes=10, priority=Priority.LOW, category="enrichment", specific_time="09:00") # no overlap
+    
+    scheduler = Scheduler(pet=pet, tasks=[t1, t2, t3])
+    conflicts = scheduler.detect_conflicts()
+    
+    assert len(conflicts) == 1
+    assert conflicts[0]["task1"] == t1
+    assert conflicts[0]["task2"] == t2
+    assert "Walk A" in conflicts[0]["message"]
+    assert "Feed B" in conflicts[0]["message"]
+
+def test_filtering_by_pet_and_status():
+    owner = Owner(name="Jordan", available_time_minutes=120)
+    pet = Pet(name="Mochi", species="Cat", breed="Ragdoll", age=2, owner=owner)
+    
+    tasks = [
+        Task(title="Mochi Meds", duration_minutes=10, priority=Priority.HIGH, category="meds", pet_name="Mochi", is_completed=False),
+        Task(title="Biscuit Walk", duration_minutes=30, priority=Priority.HIGH, category="walk", pet_name="Biscuit", is_completed=False),
+        Task(title="Mochi Brush", duration_minutes=15, priority=Priority.MEDIUM, category="grooming", pet_name="Mochi", is_completed=True),
+        Task(title="All Feeding", duration_minutes=20, priority=Priority.HIGH, category="feeding", pet_name="All", is_completed=False),
+    ]
+    
+    scheduler = Scheduler(pet=pet, tasks=tasks)
+    
+    # Test Pet Filter = "Mochi", Status Filter = "All"
+    plan_mochi_all = scheduler.generate_plan(pet_filter="Mochi", status_filter="All")
+    titles_mochi_all = [item["title"] for item in plan_mochi_all]
+    assert "Mochi Meds" in titles_mochi_all
+    assert "Mochi Brush" in titles_mochi_all
+    assert "All Feeding" in titles_mochi_all # "All" shared tasks should be included
+    assert "Biscuit Walk" not in titles_mochi_all
+    
+    # Test Pet Filter = "Mochi", Status Filter = "Pending"
+    plan_mochi_pending = scheduler.generate_plan(pet_filter="Mochi", status_filter="Pending")
+    titles_mochi_pending = [item["title"] for item in plan_mochi_pending]
+    assert "Mochi Meds" in titles_mochi_pending
+    assert "All Feeding" in titles_mochi_pending
+    assert "Mochi Brush" not in titles_mochi_pending # Completed task filtered out
+
+def test_interval_gap_filling():
+    owner = Owner(name="Jordan", available_time_minutes=120)
+    pet = Pet(name="Mochi", species="Cat", breed="Ragdoll", age=2, owner=owner)
+    
+    tasks = [
+        # Fixed time task from 08:30 to 09:00 (510 to 540)
+        Task(title="Fixed Meds", duration_minutes=30, priority=Priority.HIGH, category="meds", specific_time="08:30"),
+        # Flexible morning task (08:00 to 12:00 / 480 to 720). Should fit in the gap 08:00 - 08:30 (480 - 510)
+        Task(title="Morning Feeding", duration_minutes=30, priority=Priority.HIGH, category="feeding", time_of_day=TimeOfDay.MORNING),
+        # Flexible morning task. Should fit after the fixed meds, starting at 09:00 (540)
+        Task(title="Morning Grooming", duration_minutes=20, priority=Priority.MEDIUM, category="grooming", time_of_day=TimeOfDay.MORNING),
+    ]
+    
+    scheduler = Scheduler(pet=pet, tasks=tasks)
+    plan = scheduler.generate_plan()
+    
+    # Verify times assigned
+    # Fixed Meds should start at 08:30 exactly
+    meds_item = next(item for item in plan if item["title"] == "Fixed Meds")
+    assert meds_item["start_time"] == "08:30"
+    assert meds_item["end_time"] == "09:00"
+    
+    # Morning Feeding should start at 08:00 and end at 08:30
+    feeding_item = next(item for item in plan if item["title"] == "Morning Feeding")
+    assert feeding_item["start_time"] == "08:00"
+    assert feeding_item["end_time"] == "08:30"
+    
+    # Morning Grooming should start at 09:00 and end at 09:20
+    grooming_item = next(item for item in plan if item["title"] == "Morning Grooming")
+    assert grooming_item["start_time"] == "09:00"
+    assert grooming_item["end_time"] == "09:20"
+
+def test_recurring_task_auto_spawning():
+    import datetime
+    owner = Owner(name="Jordan", available_time_minutes=60)
+    pet = Pet(name="Mochi", species="Cat", breed="Ragdoll", age=2, owner=owner)
+    
+    # Create daily recurring task
+    t_daily = Task(title="Daily Feed", duration_minutes=15, priority=Priority.HIGH, category="feeding", recurrence="daily")
+    t_weekly = Task(title="Weekly Bath", duration_minutes=30, priority=Priority.MEDIUM, category="grooming", recurrence="weekly")
+    t_none = Task(title="One-time Play", duration_minutes=10, priority=Priority.LOW, category="enrichment", recurrence="none")
+    
+    scheduler = Scheduler(pet=pet, tasks=[t_daily, t_weekly, t_none])
+    
+    # Mark t_daily complete
+    new_daily = scheduler.mark_task_complete(t_daily)
+    assert t_daily.is_completed
+    assert new_daily is not None
+    assert new_daily.title == "Daily Feed"
+    assert not new_daily.is_completed
+    # Check date calculation (today + 1 day)
+    assert new_daily.due_date == datetime.date.today() + datetime.timedelta(days=1)
+    # Check it was added to pool
+    assert new_daily in scheduler.tasks
+    
+    # Mark t_weekly complete
+    new_weekly = scheduler.mark_task_complete(t_weekly)
+    assert t_weekly.is_completed
+    assert new_weekly is not None
+    assert new_weekly.due_date == datetime.date.today() + datetime.timedelta(weeks=1)
+    assert new_weekly in scheduler.tasks
+    
+    # Mark t_none complete (should not spawn anything)
+    new_none = scheduler.mark_task_complete(t_none)
+    assert t_none.is_completed
+    assert new_none is None

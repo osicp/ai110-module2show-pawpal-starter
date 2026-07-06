@@ -81,14 +81,25 @@ Sample test output:
 
 ## 📐 Smarter Scheduling
 
-> Fill in once you've implemented scheduling logic.
+Our pet care scheduler incorporates advanced decision-making and logic to handle real-world scheduling needs:
 
-| Feature | Method(s) | Notes |
-|---------|-----------|-------|
-| Task sorting | | e.g., by priority, duration |
-| Filtering | | e.g., skip tasks if time runs out |
-| Conflict handling | | e.g., overlapping time slots |
-| Recurring tasks | | e.g., daily vs. weekly |
+### 1. Chronological & Priority Task Sorting
+*   **Method**: `Scheduler.sort_tasks_by_time(tasks)`
+*   **Behavior**: Sorts any list of tasks by prioritizing fixed-time tasks (those with specific `HH:MM` start times) chronologically first. Flexible tasks (without start times) are sorted next based on their preferred `TimeOfDay` window (`Morning` -> `Afternoon` -> `Evening` -> `Any`) and sub-sorted by Priority (High -> Medium -> Low).
+
+### 2. Multi-Pet & Status Filtering
+*   **Method**: `Scheduler.filter_tasks(pet_filter, status_filter, tasks)`
+*   **Behavior**: Filters any list of tasks down by:
+    *   **Pet Name**: Filters to a specific pet's tasks (e.g. `"Mochi"`) while retaining shared tasks owned by `"All"`.
+    *   **Completion Status**: Filters to either `"Pending"` tasks or `"Completed"` tasks.
+
+### 3. Basic Conflict Detection
+*   **Method**: `Scheduler.detect_conflicts(tasks)`
+*   **Behavior**: Scans the task pool for overlapping fixed start times (e.g., two tasks scheduled at `08:00` where the first task's duration overlaps the second's start). It returns warning objects with description messages that are displayed as warning alerts in the UI and skipped during schedule generation.
+
+### 4. Recurring Task Auto-Generation
+*   **Methods**: `Task.update_status(completed)` & `Scheduler.mark_task_complete(task)`
+*   **Behavior**: When a task marked as `"daily"` or `"weekly"` is completed, the scheduler automatically calculates the next due date using Python's `timedelta` (e.g., today + 1 day for daily, today + 7 days for weekly) and generates a new, pending `Task` instance in the pool.
 
 ## 📸 Demo Walkthrough
 

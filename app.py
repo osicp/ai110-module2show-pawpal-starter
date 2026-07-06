@@ -210,53 +210,154 @@ with col_left:
     with t_col1:
         task_title = st.text_input("Task Title", placeholder="e.g. Give Medication")
         category = st.selectbox("Category", ["walk", "feeding", "meds", "enrichment", "grooming", "other"])
+        
+        # Associated pet selection
+        pet_name_opt = st.selectbox("Associated Pet", ["All", st.session_state.pet.name, "Other..."])
+        if pet_name_opt == "Other...":
+            t_pet_name = st.text_input("Enter Pet Name", value="Biscuit")
+        else:
+            t_pet_name = pet_name_opt
+            
     with t_col2:
         duration = st.number_input("Duration (minutes)", min_value=1, max_value=240, value=15, step=5)
         priority = st.selectbox("Priority Level", ["low", "medium", "high"], index=1)
+        recurrence = st.selectbox("Recurrence", ["none", "daily", "weekly"])
         
-    time_of_day = st.selectbox("Preferred Time of Day", ["any", "morning", "afternoon", "evening"], index=0)
+    c_time1, c_time2 = st.columns(2)
+    with c_time1:
+        time_of_day = st.selectbox("Preferred Time of Day", ["any", "morning", "afternoon", "evening"], index=0)
+    with c_time2:
+        specific_time_val = st.text_input("Specific Start Time (HH:MM, Optional)", value="")
     
-    # Task actions (Add and Clear)
-    act_col1, act_col2 = st.columns([1, 1])
+    # Task actions (Add, Clear, Reset)
+    act_col1, act_col2, act_col3 = st.columns([1, 1, 1.2])
     with act_col1:
-        # Add Task via Scheduler method
         if st.button("➕ Add Task"):
             if task_title.strip():
-                new_task = Task(
-                    title=task_title.strip(),
-                    duration_minutes=int(duration),
-                    priority=Priority.from_str(priority),
-                    category=category,
-                    time_of_day=TimeOfDay.from_str(time_of_day)
-                )
-                # Calling our actual Scheduler.add_task method
-                st.session_state.scheduler.add_task(new_task)
-                st.success(f"Added task: '{task_title}'!")
-                st.rerun()
+                # Validate specific time format if provided
+                spec_time = None
+                valid = True
+                if specific_time_val.strip():
+                    try:
+                        parts = specific_time_val.strip().split(":")
+                        if len(parts) != 2:
+                            raise ValueError()
+                        h, m = int(parts[0]), int(parts[1])
+                        if not (0 <= h < 24 and 0 <= m < 60):
+                            raise ValueError()
+                        spec_time = f"{h:02d}:{m:02d}"
+                    except ValueError:
+                        st.error("Invalid time! Use HH:MM format (e.g. 08:30).")
+                        valid = False
+                
+                if valid:
+                    new_task = Task(
+                        title=task_title.strip(),
+                        duration_minutes=int(duration),
+                        priority=Priority.from_str(priority),
+                        category=category,
+                        time_of_day=TimeOfDay.from_str(time_of_day),
+                        specific_time=spec_time,
+                        pet_name=t_pet_name.strip(),
+                        recurrence=recurrence
+                    )
+                    st.session_state.scheduler.add_task(new_task)
+                    st.success(f"Added task: '{task_title}'!")
+                    st.rerun()
             else:
                 st.error("Task title cannot be empty!")
+                
     with act_col2:
-        if st.button("🗑️ Clear All Tasks"):
+        if st.button("🗑️ Clear Tasks"):
             st.session_state.scheduler.tasks = []
             st.info("Cleared all tasks.")
             st.rerun()
+
+    with act_col3:
+        if st.button("🔄 Reset Recurring"):
+            reset_count = 0
+            for t in st.session_state.scheduler.tasks:
+                if t.recurrence != "none" and t.is_completed:
+                    t.is_completed = False
+                    reset_count += 1
+            st.success(f"Reset {reset_count} completed recurring tasks!")
+            st.rerun()
             
     # List Current Tasks from Scheduler's internal list
-    st.markdown("### Current Task List Pool")
-    if st.session_state.scheduler.tasks:
-        task_df = []
-        for i, t in enumerate(st.session_state.scheduler.tasks):
-            task_df.append({
-                "Index": i + 1,
-                "Title": t.title,
-                "Duration (min)": t.duration_minutes,
-                "Priority": t.priority.name,
-                "Time Preference": t.time_of_day.value.capitalize(),
-                "Category": t.category.capitalize()
-            })
-        st.table(task_df)
+    st.divider()
+    st.markdown("### 📋 Current Task List Pool")
+    
+    # Conflict Detection Warning Banner
+    pool_conflicts = st.session_state.scheduler.detect_conflicts()
+    if pool_conflicts:
+        st.warning("⚠️ **Time Conflict Warning in Pool**:")
+        for c in pool_conflicts:
+            st.write(f"- {c['message']}")
+            
+    # Filters
+    st.markdown("##### *Filter Pool List:*")
+    f_col1, f_col2 = st.columns(2)
+    
+    # Get unique pet names in the pool to populate the dropdown
+    unique_pets = {"All"}
+    for t in st.session_state.scheduler.tasks:
+        if t.pet_name:
+            unique_pets.add(t.pet_name)
+    sorted_pets = sorted(list(unique_pets))
+    
+    with f_col1:
+        selected_pet_filter = st.selectbox("Filter by Pet", ["All Pets"] + [p for p in sorted_pets if p != "All"] + (["All (Shared)"] if "All" in sorted_pets else []), index=0)
+    with f_col2:
+        selected_status_filter = st.selectbox("Filter by Status", ["All Tasks", "Pending", "Completed"], index=0)
+        
+    # Map selection strings to filter keys
+    pet_filter_key = "All"
+    if selected_pet_filter == "All (Shared)":
+        pet_filter_key = "All"
+    elif selected_pet_filter != "All Pets":
+        pet_filter_key = selected_pet_filter
+        
+    # Filter and display tasks interactively
+    filtered_indices_and_tasks = []
+    for i, t in enumerate(st.session_state.scheduler.tasks):
+        # Pet filter
+        if selected_pet_filter != "All Pets":
+            if t.pet_name.lower() != pet_filter_key.lower():
+                continue
+        # Status filter
+        if selected_status_filter == "Pending" and t.is_completed:
+            continue
+        if selected_status_filter == "Completed" and not t.is_completed:
+            continue
+        filtered_indices_and_tasks.append((i, t))
+        
+    if filtered_indices_and_tasks:
+        for idx, t in filtered_indices_and_tasks:
+            # Custom container for interactive tasks
+            t_col_check, t_col_desc = st.columns([0.1, 0.9])
+            with t_col_check:
+                # Track check box state and update status when toggled
+                is_checked = st.checkbox("", value=t.is_completed, key=f"check_pool_{idx}")
+                if is_checked != t.is_completed:
+                    if is_checked:
+                        st.session_state.scheduler.mark_task_complete(t)
+                    else:
+                        t.update_status(False)
+                    st.rerun()
+            with t_col_desc:
+                time_str = f"⏰ {t.specific_time}" if t.specific_time else f"📅 {t.time_of_day.value.capitalize()}"
+                rec_badge = f" | 🔄 {t.recurrence.capitalize()}" if t.recurrence != "none" else ""
+                pet_badge = f" | 🐾 {t.pet_name}" if t.pet_name != "All" else " | 🐾 All Pets"
+                completed_style = "text-decoration: line-through; color: #A0AEC0;" if t.is_completed else ""
+                
+                st.markdown(
+                    f"<div style='{completed_style}'>"
+                    f"**{t.title}** ({t.duration_minutes}m) — `{t.priority.name}` — {time_str}{pet_badge}{rec_badge}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
     else:
-        st.info("No tasks in the pool. Add some tasks above to begin planning.")
+        st.info("No tasks in the pool matching current filters.")
 
 with col_right:
     st.subheader("📅 Daily Schedule & Planner")
@@ -266,8 +367,16 @@ with col_right:
         if not st.session_state.scheduler.tasks:
             st.warning("Please add some tasks to the pool before generating the schedule.")
         else:
+            # Map filters for generate_plan
+            gen_pet_filter = pet_filter_key
+            gen_status_filter = "All"
+            if selected_status_filter == "Pending":
+                gen_status_filter = "Pending"
+            elif selected_status_filter == "Completed":
+                gen_status_filter = "Completed"
+
             # Solve schedule and retrieve reasoning using methods we wrote
-            plan = st.session_state.scheduler.generate_plan()
+            plan = st.session_state.scheduler.generate_plan(pet_filter=gen_pet_filter, status_filter=gen_status_filter)
             reasoning = st.session_state.scheduler.get_reasoning()
             
             # Summarize metrics
@@ -279,7 +388,7 @@ with col_right:
             
             # Metrics Row
             m_col1, m_col2, m_col3 = st.columns(3)
-            m_col1.metric("Scheduled Tasks", f"{len(plan)} / {len(st.session_state.scheduler.tasks)}")
+            m_col1.metric("Scheduled Tasks", f"{len(plan)} / {len(filtered_indices_and_tasks)}")
             m_col2.metric("Scheduled Duration", f"{total_scheduled_time} mins")
             m_col3.metric("Available Time Limit", f"{st.session_state.owner.available_time_minutes} mins")
             
@@ -306,6 +415,10 @@ with col_right:
                     time_class = item["time_of_day"].lower()
                     p_name = item["priority"].lower()
                     
+                    pet_badge_text = f"🐾 {item['pet_name']}" if item.get("pet_name") and item["pet_name"] != "All" else "🐾 All Pets"
+                    rec_badge_text = f"🔄 {item['recurrence'].capitalize()}" if item.get("recurrence") and item["recurrence"] != "none" else ""
+                    rec_badge_html = f"<span>{rec_badge_text}</span>" if rec_badge_text else ""
+                    
                     st.markdown(
                         f"""
                         <div class="timeline-item {time_class}">
@@ -318,6 +431,8 @@ with col_right:
                                     <span>⏳ {item["duration_minutes"]} mins</span>
                                     <span>📂 {item["category"].capitalize()}</span>
                                     <span class="badge badge-{p_name}">{item["priority"]} Priority</span>
+                                    <span>{pet_badge_text}</span>
+                                    {rec_badge_html}
                                 </div>
                             </div>
                         </div>
