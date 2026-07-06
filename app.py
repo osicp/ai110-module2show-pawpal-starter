@@ -146,6 +146,24 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# ----------------- SESSION STATE INITIALIZATION (Pattern A) -----------------
+if "owner" not in st.session_state:
+    st.session_state.owner = Owner(name="Jordan", available_time_minutes=60)
+
+if "pet" not in st.session_state:
+    st.session_state.pet = Pet(name="Mochi", species="Cat", breed="Ragdoll", age=2, owner=st.session_state.owner)
+
+if "scheduler" not in st.session_state:
+    # Seed default tasks inside our Task class instances
+    default_tasks = [
+        Task(title="Morning Walk", duration_minutes=30, priority=Priority.HIGH, category="walk", time_of_day=TimeOfDay.MORNING),
+        Task(title="Breakfast Feed", duration_minutes=15, priority=Priority.HIGH, category="feeding", time_of_day=TimeOfDay.MORNING),
+        Task(title="Teeth Grooming", duration_minutes=10, priority=Priority.MEDIUM, category="grooming", time_of_day=TimeOfDay.AFTERNOON),
+        Task(title="Fetch Playtime", duration_minutes=25, priority=Priority.MEDIUM, category="enrichment", time_of_day=TimeOfDay.ANY),
+        Task(title="Brush Fur", duration_minutes=15, priority=Priority.LOW, category="grooming", time_of_day=TimeOfDay.EVENING)
+    ]
+    st.session_state.scheduler = Scheduler(pet=st.session_state.pet, tasks=default_tasks)
+
 # Render main header with nice emojis
 st.markdown('<h1 class="app-header">🐾 PawPal+ Care Assistant</h1>', unsafe_allow_html=True)
 st.markdown("##### *Helping busy pet owners maintain consistent, optimized care for their companions.*")
@@ -154,34 +172,36 @@ st.divider()
 # Layout split into two columns: Left for Inputs, Right for Generated Schedule
 col_left, col_right = st.columns([1, 1.2], gap="large")
 
-# Initialize default tasks in session state if not present
-if "tasks" not in st.session_state:
-    st.session_state.tasks = [
-        {"title": "Morning Walk", "duration_minutes": 30, "priority": "high", "category": "walk", "time_of_day": "morning"},
-        {"title": "Breakfast Feed", "duration_minutes": 15, "priority": "high", "category": "feeding", "time_of_day": "morning"},
-        {"title": "Teeth Grooming", "duration_minutes": 10, "priority": "medium", "category": "grooming", "time_of_day": "afternoon"},
-        {"title": "Fetch Playtime", "duration_minutes": 25, "priority": "medium", "category": "enrichment", "time_of_day": "any"},
-        {"title": "Brush Fur", "duration_minutes": 15, "priority": "low", "category": "grooming", "time_of_day": "evening"}
-    ]
-
 with col_left:
     st.subheader("👤 Profiles & Constraints")
     
-    # Grid for Owner & Pet info
+    # Grid for Owner & Pet info (updating the session state objects directly)
     c1, c2 = st.columns(2)
     with c1:
-        owner_name = st.text_input("Owner Name", value="Jordan")
-        available_time = st.number_input("Available Time (min/day)", min_value=10, max_value=1440, value=60, step=10)
+        owner_name = st.text_input("Owner Name", value=st.session_state.owner.name)
+        available_time = st.number_input("Available Time (min/day)", min_value=10, max_value=1440, value=st.session_state.owner.available_time_minutes, step=10)
     with c2:
-        pet_name = st.text_input("Pet Name", value="Mochi")
-        species = st.selectbox("Species", ["Dog", "Cat", "Bird", "Rabbit", "Reptile", "Other"])
+        pet_name = st.text_input("Pet Name", value=st.session_state.pet.name)
+        
+        # Selectbox mapping index to preserve current species selection
+        species_options = ["Dog", "Cat", "Bird", "Rabbit", "Reptile", "Other"]
+        species_index = species_options.index(st.session_state.pet.species) if st.session_state.pet.species in species_options else 1
+        species = st.selectbox("Species", species_options, index=species_index)
         
     c3, c4 = st.columns(2)
     with c3:
-        breed = st.text_input("Breed", value="Ragdoll")
+        breed = st.text_input("Breed", value=st.session_state.pet.breed)
     with c4:
-        age = st.number_input("Age (years)", min_value=0, max_value=30, value=2, step=1)
-        
+        age = st.number_input("Age (years)", min_value=0, max_value=30, value=st.session_state.pet.age, step=1)
+    
+    # Keep attributes in session state synced with UI inputs
+    st.session_state.owner.name = owner_name
+    st.session_state.owner.available_time_minutes = available_time
+    st.session_state.pet.name = pet_name
+    st.session_state.pet.species = species
+    st.session_state.pet.breed = breed
+    st.session_state.pet.age = age
+    
     st.divider()
     
     st.subheader("📝 Add Pet Care Task")
@@ -199,38 +219,40 @@ with col_left:
     # Task actions (Add and Clear)
     act_col1, act_col2 = st.columns([1, 1])
     with act_col1:
+        # Add Task via Scheduler method
         if st.button("➕ Add Task"):
             if task_title.strip():
-                st.session_state.tasks.append({
-                    "title": task_title.strip(),
-                    "duration_minutes": int(duration),
-                    "priority": priority,
-                    "category": category,
-                    "time_of_day": time_of_day
-                })
+                new_task = Task(
+                    title=task_title.strip(),
+                    duration_minutes=int(duration),
+                    priority=Priority.from_str(priority),
+                    category=category,
+                    time_of_day=TimeOfDay.from_str(time_of_day)
+                )
+                # Calling our actual Scheduler.add_task method
+                st.session_state.scheduler.add_task(new_task)
                 st.success(f"Added task: '{task_title}'!")
                 st.rerun()
             else:
                 st.error("Task title cannot be empty!")
     with act_col2:
         if st.button("🗑️ Clear All Tasks"):
-            st.session_state.tasks = []
+            st.session_state.scheduler.tasks = []
             st.info("Cleared all tasks.")
             st.rerun()
             
-    # List Current Tasks
+    # List Current Tasks from Scheduler's internal list
     st.markdown("### Current Task List Pool")
-    if st.session_state.tasks:
-        # Display as a table
+    if st.session_state.scheduler.tasks:
         task_df = []
-        for i, t in enumerate(st.session_state.tasks):
+        for i, t in enumerate(st.session_state.scheduler.tasks):
             task_df.append({
                 "Index": i + 1,
-                "Title": t["title"],
-                "Duration (min)": t["duration_minutes"],
-                "Priority": t["priority"].upper(),
-                "Time Preference": t["time_of_day"].capitalize(),
-                "Category": t["category"].capitalize()
+                "Title": t.title,
+                "Duration (min)": t.duration_minutes,
+                "Priority": t.priority.name,
+                "Time Preference": t.time_of_day.value.capitalize(),
+                "Category": t.category.capitalize()
             })
         st.table(task_df)
     else:
@@ -239,48 +261,31 @@ with col_left:
 with col_right:
     st.subheader("📅 Daily Schedule & Planner")
     
-    # Instantiating the domain objects
-    owner = Owner(name=owner_name, available_time_minutes=available_time)
-    pet = Pet(name=pet_name, species=species, breed=breed, age=age, owner=owner)
-    
     # Build schedule button
     if st.button("⚡ Generate Daily Schedule"):
-        if not st.session_state.tasks:
+        if not st.session_state.scheduler.tasks:
             st.warning("Please add some tasks to the pool before generating the schedule.")
         else:
-            # Map dict tasks to Task dataclasses
-            tasks_list = [
-                Task(
-                    title=t["title"],
-                    duration_minutes=t["duration_minutes"],
-                    priority=Priority.from_str(t["priority"]),
-                    category=t["category"],
-                    time_of_day=TimeOfDay.from_str(t["time_of_day"])
-                )
-                for t in st.session_state.tasks
-            ]
-            
-            # Solve schedule
-            scheduler = Scheduler(pet=pet, tasks=tasks_list)
-            plan = scheduler.generate_plan()
-            reasoning = scheduler.get_reasoning()
+            # Solve schedule and retrieve reasoning using methods we wrote
+            plan = st.session_state.scheduler.generate_plan()
+            reasoning = st.session_state.scheduler.get_reasoning()
             
             # Summarize metrics
             total_scheduled_time = sum(item["duration_minutes"] for item in plan)
-            utilization = (total_scheduled_time / available_time) * 100
+            utilization = (total_scheduled_time / st.session_state.owner.available_time_minutes) * 100
             
-            st.markdown(f"#### Generated Schedule for **{pet.name}**")
-            st.markdown(f"*{pet.get_profile()}*")
+            st.markdown(f"#### Generated Schedule for **{st.session_state.pet.name}**")
+            st.markdown(f"*{st.session_state.pet.get_profile()}*")
             
             # Metrics Row
             m_col1, m_col2, m_col3 = st.columns(3)
-            m_col1.metric("Scheduled Tasks", f"{len(plan)} / {len(tasks_list)}")
+            m_col1.metric("Scheduled Tasks", f"{len(plan)} / {len(st.session_state.scheduler.tasks)}")
             m_col2.metric("Scheduled Duration", f"{total_scheduled_time} mins")
-            m_col3.metric("Available Time Limit", f"{available_time} mins")
+            m_col3.metric("Available Time Limit", f"{st.session_state.owner.available_time_minutes} mins")
             
             # Progress bar for time utilization
             st.progress(min(utilization / 100.0, 1.0))
-            st.caption(f"Time utilization: {total_scheduled_time} / {available_time} minutes ({utilization:.1f}%)")
+            st.caption(f"Time utilization: {total_scheduled_time} / {st.session_state.owner.available_time_minutes} minutes ({utilization:.1f}%)")
             
             # Display Plan Timeline
             if plan:
@@ -328,4 +333,4 @@ with col_right:
             st.markdown(f'<div class="reason-box">{reasoning}</div>', unsafe_allow_html=True)
     else:
         # Initial call-to-action placeholder
-        st.info(f"Click the 'Generate Daily Schedule' button above to plan {pet.name}'s day based on your available time constraints.")
+        st.info(f"Click the 'Generate Daily Schedule' button above to plan {st.session_state.pet.name}'s day based on your available time constraints.")
